@@ -3,6 +3,49 @@ open GameSimulator.Types
 open GameSimulator.Game
 open GameSimulator.PlayLogger
 
+// Pure functional simulation runner
+let runSimulation (numGames: int) =
+    let startTime = DateTime.Now
+    
+    // Generate all games functionally with different seeds
+    let allRecords = 
+        [1..numGames]
+        |> List.mapi (fun i gameId -> 
+            let seed = gameId * 42 + i  // Deterministic but varied seeds
+            playGameWithSeed gameId seed)
+        |> List.concat
+    
+    let endTime = DateTime.Now
+    let elapsed = endTime - startTime
+    
+    // Calculate statistics functionally
+    let stats = {|
+        TotalGames = allRecords |> List.map (fun r -> r.GameId) |> List.distinct |> List.length
+        TotalRecords = allRecords.Length
+        AvgStepsPerGame = float allRecords.Length / float numGames
+        AvgReward = 
+            allRecords 
+            |> List.filter (fun r -> r.Done) 
+            |> List.averageBy (fun r -> r.Reward)
+        ElapsedSeconds = elapsed.TotalSeconds
+    |}
+    
+    (allRecords, stats)
+
+// Pure functional progress reporter
+let reportProgress (gameId: int) =
+    if gameId % 1000 = 0 then
+        printfn "Completed %d games..." gameId
+
+// Pure functional statistics printer
+let printStats (stats: {| TotalGames: int; TotalRecords: int; AvgStepsPerGame: float; AvgReward: float; ElapsedSeconds: float |}) =
+    printfn "\n=== Simulation Complete ==="
+    printfn "Total games: %d" stats.TotalGames
+    printfn "Total records: %d" stats.TotalRecords
+    printfn "Average steps per game: %.2f" stats.AvgStepsPerGame
+    printfn "Average reward: %.2f" stats.AvgReward
+    printfn "Time elapsed: %.2f seconds" stats.ElapsedSeconds
+
 [<EntryPoint>]
 let main argv =
     let numGames = 
@@ -13,34 +56,13 @@ let main argv =
     
     printfn "Starting simulation of %d games..." numGames
     
-    let mutable allRecords = []
-    let startTime = DateTime.Now
+    // Run simulation functionally
+    let (allRecords, stats) = runSimulation numGames
     
-    for gameId in 1 .. numGames do
-        let gameRecords = playGame gameId
-        allRecords <- allRecords @ gameRecords
-        
-        if gameId % 1000 = 0 then
-            printfn "Completed %d games..." gameId
-    
-    let endTime = DateTime.Now
-    let elapsed = endTime - startTime
-    
+    // Side effects only at the end
     writeToCsv "gameplay_log.csv" allRecords
     writeToJson "gameplay_log.json" allRecords
     
-    let totalGames = allRecords |> List.map (fun r -> r.GameId) |> List.distinct |> List.length
-    let avgStepsPerGame = float allRecords.Length / float totalGames
-    let avgReward = 
-        allRecords 
-        |> List.filter (fun r -> r.Done) 
-        |> List.averageBy (fun r -> r.Reward)
-    
-    printfn "\n=== Simulation Complete ==="
-    printfn "Total games: %d" totalGames
-    printfn "Total records: %d" allRecords.Length
-    printfn "Average steps per game: %.2f" avgStepsPerGame
-    printfn "Average reward: %.2f" avgReward
-    printfn "Time elapsed: %.2f seconds" elapsed.TotalSeconds
+    printStats stats
     
     0

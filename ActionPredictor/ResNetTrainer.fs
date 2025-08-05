@@ -65,100 +65,97 @@ let trainResNet (records: PlayRecord list) =
     printfn "Learning rate: 5e-4 with weight decay: 1e-4"
     printfn "LR scheduler: StepLR (step=30, gamma=0.5)"
     
-    let mutable bestValAcc = 0.0
-    let mutable bestEpoch = 0
-    let mutable patienceCounter = 0
-    let mutable shouldStop = false
+    // Functional training with immutable state tracking
+    let initialState = { Epoch = 1; BestValAcc = 0.0; BestEpoch = 0; PatienceCounter = 0; ShouldStop = false }
     let patience = 20
     
-    // Training loop with early stopping
-    let mutable epoch = 1
-    while epoch <= epochs && not shouldStop do
-        model.train() |> ignore
-        let mutable totalLoss = 0.0
-        let mutable trainCorrect = 0
-        let mutable trainTotal = 0
+    // Functional batch processing
+    let processBatch (batch: int) =
+        let startIdx = batch * batchSize
+        let endIdx = min (startIdx + batchSize) trainingData.Length
+        let batchSize' = endIdx - startIdx
         
-        // Mini-batch training
-        for batch in 0..(numBatches - 1) do
-            let startIdx = batch * batchSize
-            let endIdx = min (startIdx + batchSize) trainingData.Length
-            let batchSize' = endIdx - startIdx
+        if batchSize' > 0 then
+            let batchFeatures = trainFeatures.slice(0, startIdx, endIdx, 1)
+            let batchLabels = trainLabels.slice(0, startIdx, endIdx, 1)
             
-            if batchSize' > 0 then
-                let batchFeatures = trainFeatures.slice(0, startIdx, endIdx, 1)
-                let batchLabels = trainLabels.slice(0, startIdx, endIdx, 1)
-                
-                optimizer.zero_grad()
-                
-                let outputs = model.forward(batchFeatures)
-                let loss = criterion.call(outputs, batchLabels)
-                
-                // Calculate training accuracy for this batch
-                let predictions = outputs.argmax(1)
-                let correct = predictions.eq(batchLabels).sum().ToInt32()
-                trainCorrect <- trainCorrect + correct
-                trainTotal <- trainTotal + batchSize'
-                
-                loss.backward()
-                
-                // Gradient clipping for stability
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) |> ignore
-                
-                optimizer.step() |> ignore
-                
-                totalLoss <- totalLoss + loss.ToDouble()
-        
-        // Update learning rate
-        scheduler.step()
-        
-        let avgLoss = totalLoss / float numBatches
-        let trainAcc = float trainCorrect / float trainTotal * 100.0
-        
-        // Validation every 5 epochs or at the end
-        if epoch % 5 = 0 || epoch = epochs then
-            model.eval() |> ignore
-            use _noGrad = torch.no_grad()
+            optimizer.zero_grad()
             
-            let valOutputs = model.forward(valFeatures)
-            let valLoss = criterion.call(valOutputs, valLabels).ToDouble()
+            let outputs = model.forward(batchFeatures)
+            let loss = criterion.call(outputs, batchLabels)
             
-            let predictions = valOutputs.argmax(1)
-            let correct = predictions.eq(valLabels).sum().ToInt32()
-            let valAcc = float correct / float validationData.Length * 100.0
+            let predictions = outputs.argmax(1)
+            let correct = predictions.eq(batchLabels).sum().ToInt32()
             
-            let currentLr = (optimizer.ParamGroups |> Seq.head).LearningRate
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) |> ignore
+            optimizer.step() |> ignore
             
-            printfn "Epoch %3d/%d - Train Loss: %.4f - Train Acc: %.2f%% - Val Loss: %.4f - Val Acc: %.2f%% - LR: %.6f" 
-                epoch epochs avgLoss trainAcc valLoss valAcc currentLr
-            
-            // Early stopping logic
-            if valAcc > bestValAcc then
-                bestValAcc <- valAcc
-                bestEpoch <- epoch
-                patienceCounter <- 0
-                // Save best model
-                let bestModelPath = "best_resnet_model.pt"
-                model.save(bestModelPath) |> ignore
-            else
-                patienceCounter <- patienceCounter + 1
-                
-            if patienceCounter >= patience then
-                printfn "Early stopping at epoch %d (best: %.2f%% at epoch %d)" epoch bestValAcc bestEpoch
-                shouldStop <- true
+            Some { Loss = loss.ToDouble(); Correct = correct; Total = batchSize' }
         else
-            // Print training progress every 10 epochs
-            if epoch % 10 = 0 then
-                let currentLr = (optimizer.ParamGroups |> Seq.head).LearningRate
-                printfn "Epoch %3d/%d - Train Loss: %.4f - Train Acc: %.2f%% - LR: %.6f" 
-                    epoch epochs avgLoss trainAcc currentLr
-        
-        epoch <- epoch + 1
+            None
+    
+    // Training loop using fold for functional state management
+    let finalState = 
+        [1..epochs]
+        |> List.fold (fun state epoch ->
+            if state.ShouldStop then
+                state
+            else
+                model.train() |> ignore
+                
+                // Process all batches functionally
+                let batchResults = 
+                    [0..(numBatches - 1)]
+                    |> List.map processBatch
+                    |> List.choose id
+                
+                scheduler.step()
+                
+                // Calculate statistics functionally
+                let totalLoss = batchResults |> List.sumBy (fun r -> r.Loss)
+                let trainCorrect = batchResults |> List.sumBy (fun r -> r.Correct) 
+                let trainTotal = batchResults |> List.sumBy (fun r -> r.Total)
+                let avgLoss = totalLoss / float numBatches
+                let trainAcc = float trainCorrect / float trainTotal * 100.0
+                
+                // Validation and early stopping
+                if epoch % 5 = 0 || epoch = epochs then
+                    model.eval() |> ignore
+                    use _noGrad = torch.no_grad()
+                    
+                    let valOutputs = model.forward(valFeatures)
+                    let valLoss = criterion.call(valOutputs, valLabels).ToDouble()
+                    let predictions = valOutputs.argmax(1)
+                    let correct = predictions.eq(valLabels).sum().ToInt32()
+                    let valAcc = float correct / float validationData.Length * 100.0
+                    let currentLr = (optimizer.ParamGroups |> Seq.head).LearningRate
+                    
+                    printfn "Epoch %3d/%d - Train Loss: %.4f - Train Acc: %.2f%% - Val Loss: %.4f - Val Acc: %.2f%% - LR: %.6f" 
+                        epoch epochs avgLoss trainAcc valLoss valAcc currentLr
+                    
+                    if valAcc > state.BestValAcc then
+                        model.save("best_resnet_model.pt") |> ignore
+                        { state with BestValAcc = valAcc; BestEpoch = epoch; PatienceCounter = 0 }
+                    else
+                        let newPatienceCounter = state.PatienceCounter + 1
+                        if newPatienceCounter >= patience then
+                            printfn "Early stopping at epoch %d (best: %.2f%% at epoch %d)" epoch state.BestValAcc state.BestEpoch
+                            { state with PatienceCounter = newPatienceCounter; ShouldStop = true }
+                        else
+                            { state with PatienceCounter = newPatienceCounter }
+                else
+                    if epoch % 10 = 0 then
+                        let currentLr = (optimizer.ParamGroups |> Seq.head).LearningRate
+                        printfn "Epoch %3d/%d - Train Loss: %.4f - Train Acc: %.2f%% - LR: %.6f" 
+                            epoch epochs avgLoss trainAcc currentLr
+                    state
+        ) initialState
     
     // Load best model for final evaluation
     if System.IO.File.Exists("best_resnet_model.pt") then
         model.load("best_resnet_model.pt") |> ignore
-        printfn "\nLoaded best model from epoch %d (Val Acc: %.2f%%)" bestEpoch bestValAcc
+        printfn "\nLoaded best model from epoch %d (Val Acc: %.2f%%)" finalState.BestEpoch finalState.BestValAcc
     
     // Final evaluation
     printfn "\n=== Final ResNet Evaluation ==="
@@ -272,7 +269,7 @@ let trainResNet (records: PlayRecord list) =
     
     printfn "\n=== Model Information ==="
     printfn "Total parameters: %s" (totalParams.ToString("N0"))
-    printfn "Best epoch: %d" bestEpoch
-    printfn "Best validation accuracy: %.2f%%" bestValAcc
+    printfn "Best epoch: %d" finalState.BestEpoch
+    printfn "Best validation accuracy: %.2f%%" finalState.BestValAcc
     
     (model, predictAction, accuracy)

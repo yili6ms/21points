@@ -47,17 +47,16 @@ let trainModel (records: PlayRecord list) =
             // Use majority vote from training data
             if hitCount > standCount then 1 else 0
     
-    // Evaluate on validation data
-    let mutable correct = 0
-    let mutable total = 0
+    // Evaluate on validation data functionally
+    let evaluationResults = 
+        validationData
+        |> List.map (fun item ->
+            let score = int item.Features.[0]
+            let prediction = learnedPolicy score
+            { Actual = item.Label; Predicted = prediction; Correct = prediction = item.Label })
     
-    for item in validationData do
-        let score = int item.Features.[0]
-        let prediction = learnedPolicy score
-        if prediction = item.Label then
-            correct <- correct + 1
-        total <- total + 1
-    
+    let correct = evaluationResults |> List.sumBy (fun r -> if r.Correct then 1 else 0)
+    let total = evaluationResults.Length
     let accuracy = float correct / float total * 100.0
     printfn "Learned policy accuracy: %.2f%%" accuracy
     
@@ -71,43 +70,47 @@ let trainModel (records: PlayRecord list) =
         let decision = if learnedPolicy score = 1 then "Hit  " else "Stand"
         printfn "%5d | %s   | %9d | %10d" score decision hitCount standCount
     
-    // Show confusion matrix
-    let mutable truePositive = 0
-    let mutable trueNegative = 0
-    let mutable falsePositive = 0
-    let mutable falseNegative = 0
-    
-    for item in validationData do
-        let score = int item.Features.[0]
-        let prediction = learnedPolicy score
-        let actual = item.Label
-        
-        match prediction, actual with
-        | 0, 0 -> trueNegative <- trueNegative + 1
-        | 1, 1 -> truePositive <- truePositive + 1
-        | 0, 1 -> falseNegative <- falseNegative + 1
-        | 1, 0 -> falsePositive <- falsePositive + 1
-        | _ -> ()
+    // Calculate confusion matrix functionally
+    let confusionMatrix = 
+        evaluationResults
+        |> List.fold (fun acc result ->
+            match result.Predicted, result.Actual with
+            | 0, 0 -> { acc with TrueNegative = acc.TrueNegative + 1 }
+            | 1, 1 -> { acc with TruePositive = acc.TruePositive + 1 }
+            | 0, 1 -> { acc with FalseNegative = acc.FalseNegative + 1 }
+            | 1, 0 -> { acc with FalsePositive = acc.FalsePositive + 1 }
+            | _ -> acc
+        ) { TruePositive = 0; TrueNegative = 0; FalsePositive = 0; FalseNegative = 0 }
     
     printfn "\n=== Confusion Matrix ==="
     printfn "                Predicted"
     printfn "             Stand    Hit"
-    printfn "Actual Stand  %4d   %4d" trueNegative falsePositive
-    printfn "Actual Hit    %4d   %4d" falseNegative truePositive
+    printfn "Actual Stand  %4d   %4d" confusionMatrix.TrueNegative confusionMatrix.FalsePositive
+    printfn "Actual Hit    %4d   %4d" confusionMatrix.FalseNegative confusionMatrix.TruePositive
     
-    let precision = 
-        if truePositive + falsePositive > 0 then
-            float truePositive / float (truePositive + falsePositive) * 100.0
-        else 0.0
-    let recall = 
-        if truePositive + falseNegative > 0 then
-            float truePositive / float (truePositive + falseNegative) * 100.0
-        else 0.0
+    // Calculate metrics functionally
+    let calculateMetrics (cm: ConfusionMatrix) =
+        let precision = 
+            if cm.TruePositive + cm.FalsePositive > 0 then
+                float cm.TruePositive / float (cm.TruePositive + cm.FalsePositive) * 100.0
+            else 0.0
+        let recall = 
+            if cm.TruePositive + cm.FalseNegative > 0 then
+                float cm.TruePositive / float (cm.TruePositive + cm.FalseNegative) * 100.0
+            else 0.0
+        let f1Score = 
+            if precision + recall > 0.0 then
+                2.0 * precision * recall / (precision + recall)
+            else 0.0
+        { Accuracy = accuracy; Precision = precision; Recall = recall; F1Score = f1Score; ConfusionMatrix = cm }
+    
+    let metrics = calculateMetrics confusionMatrix
     
     printfn "\n=== Final Metrics ==="
-    printfn "Accuracy: %.2f%%" accuracy
-    printfn "Precision (Hit): %.2f%%" precision
-    printfn "Recall (Hit): %.2f%%" recall
+    printfn "Accuracy: %.2f%%" metrics.Accuracy
+    printfn "Precision (Hit): %.2f%%" metrics.Precision
+    printfn "Recall (Hit): %.2f%%" metrics.Recall
+    printfn "F1-Score: %.2f%%" metrics.F1Score
     
     // Prepare data for model saving
     let hitDecisions = [1..21] |> List.filter (fun score -> learnedPolicy score = 1)
