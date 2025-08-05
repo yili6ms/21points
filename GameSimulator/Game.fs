@@ -15,9 +15,9 @@ let initGame = {
 let executeActionPure (state: GameState) (action: Action) (randomState: RandomState) =
     match action with
     | Stand -> 
-        ({ state with IsOver = true }, randomState)
+        { state with IsOver = true }, randomState
     | Hit ->
-        let (card, newRandomState) = takeCardPure randomState
+        let card, newRandomState = takeCardPure randomState
         let newScore = state.Score + card
         let newCardsDrawn = state.CardsDrawn @ [card]
         
@@ -27,7 +27,7 @@ let executeActionPure (state: GameState) (action: Action) (randomState: RandomSt
             else
                 { Score = newScore; CardsDrawn = newCardsDrawn; IsOver = false }
         
-        (newState, newRandomState)
+        newState, newRandomState
 
 // Impure wrapper for backward compatibility
 let executeAction (state: GameState) (action: Action) =
@@ -58,7 +58,7 @@ let rec playGamePure (gameId: int) (state: GameState) (randomState: RandomState)
         let actionInt = action.ToInt()
         let beforeScore = state.Score
         
-        let (newState, newRandomState) = executeActionPure state action randomState
+        let newState, newRandomState = executeActionPure state action randomState
         let reward = if newState.IsOver then calculateReward newState.Score else 0.0
         
         let record = {
